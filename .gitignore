@@ -1,0 +1,8 @@
+*
+!.gitignore
+
+!download_utils.py
+!task1.py
+!sota_extractor.py
+#!wasp_sections.tsv
+!latex_extractor.py
