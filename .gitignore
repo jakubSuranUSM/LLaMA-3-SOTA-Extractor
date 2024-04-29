@@ -1,5 +1,6 @@
 *
 !.gitignore
+!README.md
 
 !download_utils.py
 !task1.py
