@@ -1,8 +1,4 @@
-*
-!.gitignore
-!README.md
-
-!latex_extractor.py
-!llama3_extractor.py
-!llama3_sota_extractor_eda.ipynb
-!validation_sections.tsv
+sota/
+.vscode/
+__pycache__/
+.env
