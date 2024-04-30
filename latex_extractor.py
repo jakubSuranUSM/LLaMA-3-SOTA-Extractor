@@ -1,16 +1,33 @@
 import os
-from numpy import average
 import regex as re
-import torch
 import pandas as pd
 from tqdm import tqdm
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer
+from dotenv import load_dotenv
+import queue
+import threading
 
+load_dotenv()
+
+access_token = os.getenv('ACCESS_TOKEN')
+hf_home = os.getenv('HF_HOME')
+# set hugingface home directory
+if not hf_home or not access_token:
+    raise OSError("Please set the HF_HOME and ACCESS_TOKEN environment variables")
+else:
+    os.environ['HF_HOME'] = hf_home
+
+model = "meta-llama/Meta-Llama-3-8B-Instruct"
 DATASET_ROOT = 'sota/dataset'
-access_token = "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"
 
-
-def extract_paths(train=False):
+def extract_paths_and_labels(train=False):
+    """
+    Extracts paths and labels for all latex files in the dataset for specific split.
+    
+    :param train: If True, extracts paths for training split, otherwise for validation split.
+    
+    :return: (list of paths to latex files, list of labels to the corresponding files)
+    """
     if train:
         root = os.path.join(DATASET_ROOT, 'train')
     else:
@@ -18,18 +35,30 @@ def extract_paths(train=False):
     
     documents = os.listdir(root)
     latex_files = []
+    labels = []
 
     for doc in documents:
         if os.path.exists(f'{root}/{doc}/{doc}.tex'):
             latex_files.append(f'{root}/{doc}/{doc}.tex')
+            with open(f'{root}/{doc}/annotations.json', 'r') as f:
+                content = f.read()
+            labels.append(content)
         else:
             raise FileNotFoundError(f'{root}/{doc}/{doc}.tex')
 
     print(f'Processed {len(latex_files)} latex files')
-    return latex_files
+    assert len(latex_files) == len(labels)
+    return latex_files, labels
 
     
 def extract_content(path):
+    """
+    Extracts content of the LaTeX file by removing LaTeX code of figures
+    which take up a lot of space, while keeping the caption of the figure.
+    
+    :param path: Path to the LaTeX file
+    :return: Content of the LaTeX file
+    """
     with open(path, 'r', encoding="ISO-8859-1") as f:
         content = f.read()
     
@@ -45,6 +74,9 @@ def extract_content(path):
 
 
 def extract_caption(string):
+    """
+    Extracts caption from the LaTeX figure.
+    """
     parts = re.split(r'\\caption', string)
     caption = ''
     if len(parts) > 1:
@@ -64,11 +96,26 @@ def extract_caption(string):
 
 
 def extract_all_sections(doc):
-    sections = re.split(r'\\section|\\subsection', doc, re.S)
+    """
+    Extracts all sections from the LaTeX document, if the document does not contain any 
+    sections, tries to extract subsections.
+    
+    :param doc: LaTeX document
+    :return: List of sections and subsections
+    """
+    sections = re.split(r'\\section', doc)
+    if len(sections) <= 1:
+        sections = re.split(r'\\subsection', doc)
     return sections
 
 
 def get_section_name(section):
+    """
+    Extracts the name of the section.
+    
+    :param section: Section from the LaTeX document
+    :return: Name of the section
+    """
     stack = []
     if section.startswith('{'):
         stack.append('{')
@@ -85,33 +132,45 @@ def get_section_name(section):
     return ""
 
 def get_section_length(section):
-    tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-chat-hf", token=access_token)
+    """
+    Calculates the length of the section using a specific tokenizer.
+    """
+    tokenizer = AutoTokenizer.from_pretrained(model, token=access_token)
     
     input_ids = tokenizer.encode(section, return_tensors="pt")
     return input_ids.shape[1]
 
 
-import queue  # or queue in Python 3
-import threading
-
 class PrintThread(threading.Thread):
-    def __init__(self, queue, total):
+    """
+    Thread that prints the results to the file.
+    Uses a queue to get the results from the processing threads.
+    """
+    def __init__(self, queue, total, filename):
         threading.Thread.__init__(self)
         self.total = total
         self.queue = queue
+        self.filename = filename
 
     def printfiles(self, rows):
-        with open('wasp_sections.tsv', 'a') as output:
+        with open(self.filename, 'a') as output:
             for row in rows:
                 output.write(row + '\n')
 
     def run(self):
-        for i in tqdm(range(self.total)):
+        for _ in tqdm(range(self.total)):
             result = self.queue.get()
             self.printfiles(result)
             self.queue.task_done()
 
+
 class ProcessThread(threading.Thread):
+    """
+    Thread that processes the paths from the queue.
+    Extracts extracts all sections and subsections of the LaTeX document and writes them to the file.
+    Writes the information about the section to the file in format: paper, section_name, section_length, context.
+    Uses a queue to get the paths from the main thread and to put the results to the printing thread.
+    """
     def __init__(self, in_queue, out_queue):
         threading.Thread.__init__(self)
         self.in_queue = in_queue
@@ -137,69 +196,87 @@ class ProcessThread(threading.Thread):
         return result
         
 
-pathqueue = queue.Queue()
-resultqueue = queue.Queue()
-paths = extract_paths(True)
 
-with open('wasp_sections.tsv', 'w') as output:
-    output.write('paper\tsection_name\tsection_length\tcontext\n')
+def extract_secitons_of_all_papers(filename, train=False):
+    """
+    Extracts all sections and subsections of the LaTeX documents for all papers in the dataset.
+    Writes the information about the section to the file in format: paper, section_name, section_length, context.
+    Uses threads to process the paths and to print the results for faster results.
+    """
+    # create the queues
+    pathqueue = queue.Queue()
+    resultqueue = queue.Queue()
+    paths, _ = extract_paths_and_labels(train)
 
+    # Write the header to the file.
+    with open(filename, 'w') as output:
+        output.write('paper\tsection_name\tsection_length\tcontext\n')
 
-num_cpus = os.cpu_count()
-if num_cpus is None:
-    num_cpus = 1
-print("Number of CPUs:", num_cpus)
-# spawn threads to process
-for i in range(0, num_cpus):
-    t = ProcessThread(pathqueue, resultqueue)
+    # get number of CPUs
+    num_cpus = os.cpu_count()
+    if num_cpus is None:
+        num_cpus = 1
+    print("Number of CPUs:", num_cpus)
+    
+    # spawn threads to process
+    for _ in range(0, num_cpus):
+        t = ProcessThread(pathqueue, resultqueue)
+        t.setDaemon(True)
+        t.start()
+
+    # spawn threads to print
+    t = PrintThread(resultqueue, len(paths), filename)
     t.setDaemon(True)
     t.start()
 
-# spawn threads to print
-t = PrintThread(resultqueue, len(paths))
-t.setDaemon(True)
-t.start()
+    # add paths to queue
+    for path in paths:
+        pathqueue.put(path)
 
-# add paths to queue
-for path in paths:
-    pathqueue.put(path)
-
-# wait for queue to get empty
-pathqueue.join()
-resultqueue.join()
+    # wait for queue to get empty
+    pathqueue.join()
+    resultqueue.join()
 
 
-# doc_paths = extract_paths(True)
+def print_stats(filename): 
+    """
+    Reads the file with extracted sections and prints statistics.
+    :param filename: Name of the file with extracted sections.
+    """
+    df = pd.read_csv(filename, sep='\t')
 
-# df = pd.DataFrame(columns=['paper', 'section_name', 'section_length', 'context'])
+    max_length_row = df.loc[df['section_length'].idxmax()]
+    print("Row with max section length:")
+    print(max_length_row)
 
-# for doc_path in tqdm(doc_paths):
-#     content = extract_content(doc_path)
-#     content = content.replace('\t', ' ')
-#     content = content.replace('\n', ' ')
-#     sections = extract_all_sections(content)
-#     for section in sections:
-#         section_name = get_section_name(section)
-#         section_length = get_section_length(section)
-#         df.loc[-1] = [doc_path, section_name, section_length, section]
-#         df.index = df.index + 1 
-        
-# df.to_csv('train_sections.csv', index=False, sep='\t')
+    # Print average section length
+    average_length = df['section_length'].mean()
+    print("Average section length:", average_length)
 
-df = pd.read_csv('train_sections.csv', sep='\t')
+    # Total number of sections
+    total_sections = len(df)
+    print("Total number of sections:", total_sections)
 
-max_length_row = df.loc[df['section_length'].idxmax()]
-print("Row with max section length:")
-print(max_length_row)
+    # Number of sections with lengths longer than 4000
+    long_sections = len(df[df['section_length'] > 4000])
+    print("Number of sections with lengths longer than 8000 (LLaMA 3 context window size):", long_sections)
+    
+    
+def main():
+    filename = 'validation_sections.tsv'
+    extract_secitons_of_all_papers(filename, False)
+    print_stats(filename)
+    
+    
+if __name__ == "__main__":
+    main()
+    # no_tdms_path = 'sota/dataset/validation/0705.1367/0705.1367.tex'
+    # tdms_path = 'sota/dataset/validation/2110.01997v1/2110.01997v1.tex'
+    # tdms_annotations = 'sota/dataset/validation/2110.01997v1/annotations.json'
 
-# Print average section length
-average_length = df['section_length'].mean()
-print("Average section length:", average_length)
-
-# Total number of sections
-total_sections = len(df)
-print("Total number of sections:", total_sections)
-
-# Number of sections with lengths longer than 4000
-long_sections = len(df[df['section_length'] > 4000])
-print("Number of sections with lengths longer than 4000:", long_sections)
+    # content = extract_content(tdms_path)
+    # content = content.replace('\t', ' ')
+    # content = content.replace('\n', ' ')
+    # sections = extract_all_sections(content)   
+    # for section in sections:
+    #     print(section[:100])

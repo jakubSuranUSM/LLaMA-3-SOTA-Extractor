@@ -2,8 +2,7 @@
 !.gitignore
 !README.md
 
-!download_utils.py
-!task1.py
-!sota_extractor.py
-#!wasp_sections.tsv
 !latex_extractor.py
+!llama3_extractor.py
+!llama3_sota_extractor_eda.ipynb
+!validation_sections.tsv

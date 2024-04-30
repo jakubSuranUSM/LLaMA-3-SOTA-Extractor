@@ -2,6 +2,19 @@
 
 This repository contains codes for the LLaMA 3 SOTA extractor, which solves [Task 4 in CLEF 2024 SimpleText Lab](https://sites.google.com/view/simpletext-sota/home)
 
+## Setup
+
+- Download the [SOTA dataset](https://github.com/jd-coderepos/sota/) in the project root.
+- Create `.env` environment file and add two variables to it:
+  - `ACCESS_TOKEN` - contains your huggingface access token
+  - `HF_HOME - `contains your huggingface home on your machine
+
+## Run
+
+- Run the `latex_extractor.py` file to extract sections from LaTeX papers
+- Run the `llama3_extractor.py` file to extract the TDMS tuples from the validation set
+- Run the `llama3_sota_extractor_eda.ipynb` notebook to see two examples from the report
+
 ## Task overview from Task 4 website
 
 The **SOTA?** shared task is defined on a dataset of Artificial Intelligence scholarly articles. There are two kinds of articles: one reporting (Task, Dataset, Metric, Score) tuples and another kind that do not report the TDMS tuples. For the articles reporting TDMS tuples, all the reported TDMS annotations are provided in a separate file accompanying the scraped full-text of the articles. The extraction task is defined as follows.
